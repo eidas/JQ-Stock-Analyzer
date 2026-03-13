@@ -25,12 +25,17 @@
 - [ ] `requirements.txt` 作成（fastapi, uvicorn, sqlalchemy, jquantsapi, pandas, numpy, alembic, python-dotenv）
 - [ ] Python仮想環境セットアップ（venv）
 - [ ] `backend/main.py` — FastAPIアプリケーションエントリポイント作成
-  - CORSMiddleware設定（`http://localhost:5173` 許可）
+  - CORSMiddleware設定（`http://localhost:5173`, `http://localhost:8000` 許可）
   - ルーター登録の骨格
 - [ ] `backend/config.py` — 設定管理（.envからの読み込み）
   - J-Quants APIキー、DBパス、各種デフォルト値
 - [ ] `.env.example` 作成（APIキーのテンプレート）
 - [ ] `.gitignore` 更新（venv, __pycache__, .env, data/*.db）
+
+**本番ビルド配信**:
+- [ ] FastAPIの静的ファイル配信設定（`StaticFiles` マウント）
+  - フロントエンドの `npm run build` 成果物（`frontend/dist/`）を `/` で配信
+  - 本番運用時はCORS不要（同一オリジン）
 
 **フロントエンド**:
 - [ ] `npm create vite@latest frontend -- --template react-ts` でプロジェクト生成
@@ -55,12 +60,12 @@
 **タスク**:
 - [ ] `backend/database.py` — SQLAlchemy エンジン・セッション設定
   - SQLite WALモード有効化
-  - セッションファクトリ（`async_sessionmaker` or 同期セッション）
+  - セッションファクトリ（同期セッション `sessionmaker` を使用。SQLiteは非同期ドライバが限定的なため、同期セッション + FastAPIの `run_in_executor` で対応）
 - [ ] ORMモデル作成（`backend/models/`）:
   - [ ] `stock.py` — stocks テーブル（PK: code TEXT 4桁）
   - [ ] `quote.py` — daily_quotes テーブル（UNIQUE(code, date)、インデックス定義）
   - [ ] `financial.py` — financial_statements テーブル（UNIQUE(code, fiscal_year, type_of_document)）
-  - [ ] `metric.py` — calculated_metrics テーブル（UNIQUE(code, date)）
+  - [ ] `metric.py` — calculated_metrics テーブル（UNIQUE(code, date)）※ spec.md定義に加え、営業利益率(operating_margin)・経常利益率(ordinary_margin)・年初来騰落率(ytd_return)カラムを追加
   - [ ] `portfolio.py` — portfolios + portfolio_items テーブル
   - [ ] `screening_preset.py` — screening_presets テーブル
   - [ ] `sync_log.py` — data_sync_log テーブル（progress_pct, current_step カラム含む）
@@ -87,6 +92,7 @@
     - `get_financial_statements(date: str)` — 日付指定での財務データ取得
   - 5桁→4桁コード変換処理
   - エラーハンドリング（SDK例外のキャッチ、リトライ3回・指数バックオフ）
+  - レートリミット制御（Lightプラン: 60件/分。日付指定APIで1リクエスト=全銘柄一括取得のため通常は問題ないが、連続リクエスト時は1秒間隔を挿入）
   - トークン期限切れ時のエラーメッセージ生成
 
 **依存**: 1-1（config.pyのAPIキー設定）
@@ -104,7 +110,7 @@
     - 調整係数変更検知（adjustment_factor != 1.0）→ 過去データ再計算
   - `sync_statements(from_date, to_date)` — 財務データ同期（UPSERT）
   - `sync_all()` — 全データ一括同期（①listings → ②quotes → ③statements → ④metrics再計算）
-  - 進捗更新: data_sync_logのprogress_pct, current_stepを逐次UPDATE
+  - 進捗更新: data_sync_logのprogress_pct, current_stepを逐次UPDATE（例: `"株価取得中 450/1250日"`）
   - 排他制御: 同期処理の二重起動防止（ロックフラグ）
 - [ ] `backend/routers/sync.py` 作成
   - `POST /api/sync/quotes` — 株価同期開始（202 Accepted + sync_id返却）
@@ -113,6 +119,7 @@
   - `POST /api/sync/all` — 全データ一括同期開始
   - `GET /api/sync/status` — 同期状態取得（進捗率・ステップ情報含む）
   - バックグラウンド実行: `asyncio.create_task()` で非同期処理
+  - フロントエンドは `GET /api/sync/status` を **5秒間隔でポーリング** して進捗取得
 - [ ] 初回バルクインポート対応
   - `scripts/bulk_import.py` — コマンドラインからの初回データ投入
   - 約1,250営業日 × 株価＋財務 ≒ 2,500リクエスト（約42分）の進捗表示
@@ -134,6 +141,9 @@
     - 回転日数 = 発行済株式数 ÷ N日平均出来高
     - 20日/60日平均出来高
     - 20日ヒストリカルボラティリティ
+    - 営業利益率 = 営業利益 ÷ 売上高 × 100
+    - 経常利益率 = 経常利益 ÷ 売上高 × 100
+    - 年初来騰落率 = (直近終値 - 年初終値) ÷ 年初終値 × 100
   - `batch_calculate(date)` — 全銘柄一括計算（pandasベース高速処理）
   - calculated_metrics テーブルへのUPSERT
   - 財務データの最新レコード特定ロジック（直近のfiscal_yearから取得）
@@ -158,7 +168,7 @@
 - [ ] `frontend/src/components/common/SyncStatus.tsx` — 同期状態表示コンポーネント
   - ヘッダーのミニ進捗インジケータ
   - 同期完了/エラー時のトースト通知（`notification`）
-- [ ] ルーティング定義（6画面分のルート）
+- [ ] ルーティング定義（7画面分のルート: ダッシュボード, スクリーニング, 個別銘柄, ポートフォリオ, カスタム計算, 設定, 銘柄検索）
 - [ ] ダークテーマの基本設定（Ant Design ConfigProvider）
 - [ ] TanStack Query の Provider設定
 
@@ -169,7 +179,8 @@
 **タスク**:
 - [ ] `backend/services/screening_service.py` 作成
   - 条件パーサー: JSONリクエスト → SQLAlchemyクエリ変換
-  - 対応フィールド: 終値, 前日比, PER, PBR, 配当利回り, ROE, 営業利益率, 経常利益率, 自己資本比率, 時価総額, 売上高, 回転日数, 平均出来高, 売買代金, 移動平均乖離率, RSI, 市場区分, 業種, 銘柄名
+  - 対応フィールド: 終値, 前日比, 年初来騰落率, PER, PBR, 配当利回り, ROE, 営業利益率, 経常利益率, 自己資本比率, 時価総額, 売上高, 回転日数, 平均出来高, 売買代金, 移動平均乖離率, RSI, 市場区分, 業種, 銘柄名
+  - 営業利益率・経常利益率・年初来騰落率は `calculated_metrics` に格納済みの値を使用（1-5で計算）
   - 対応演算子: gt, lt, between, eq, contains, in
   - グループ化: group番号でグルーピング、group_logicでAND/OR結合
   - ページネーション: page, per_page対応
@@ -221,6 +232,7 @@
   - `GET /api/master/stocks/search` — 銘柄インクリメンタルサーチ（query, limit）
 - [ ] `frontend/src/pages/StockDetail.tsx` — 個別銘柄画面
   - ヘッダー部: コード、銘柄名、市場、業種、現在値、前日比
+  - ヘッダーアクション: 「ポートフォリオに追加」「ウォッチリストに追加」ボタン
   - タブ構成: サマリー / チャート / 財務 / 流動性 / 比較
   - サマリータブ: 主要指標カード（PER, PBR, ROE, 配当利回り, 時価総額, 自己資本比率）
   - 回転日数カード（20日/60日ベース、発行済株式数の基準日併記）
@@ -243,7 +255,7 @@
   - チャート種別切替: ローソク足 / ライン / エリア
   - 出来高バー（チャート下部、陰陽色分け）
   - X軸: 営業日のみ（休日ギャップなし）
-  - Y軸: 自動スケール
+  - Y軸: 自動スケール + 手動レンジ指定可能
   - ズーム・スクロール（マウスホイール/ドラッグ）
   - クロスヘアツールチップ（OHLCV値表示）
   - 期間選択: 1M / 3M / 6M / 1Y / 3Y / 5Y / 全期間
@@ -305,7 +317,7 @@
     - 推定執行日数（参加率上限ベース）
     - 日別執行スケジュール
   - 回転日数計算（20日/60日/カスタム）
-  - 浮動株ベース計算オプション
+  - 浮動株ベース計算オプション（浮動株比率の手動入力フィールドをUIに配置。デフォルト100%、ユーザーが調整可能）
 - [ ] `backend/routers/stocks.py` に追加
   - `GET /api/stocks/:code/impact` — インパクト分析実行
 - [ ] `frontend/src/components/impact/ImpactSimulator.tsx` 作成
@@ -377,7 +389,26 @@
 
 **依存**: 3-3（ポートフォリオAPI）
 
-### 3-5. 比較タブ
+### 3-5. カスタム計算画面
+
+**目的**: spec.md §4.6.3 のカスタム指標エンジン（プリセット提供）を実装
+
+**タスク**:
+- [ ] `frontend/src/pages/CustomAnalysis.tsx` — カスタム計算画面
+  - プリセット指標の一覧表示・選択UI
+  - 銘柄検索（StockSearch利用）と指標計算結果の表示
+- [ ] プリセット指標のバックエンド計算ロジック（`backend/services/metrics_service.py` に追加）:
+  - 出来高回転率 = avg_vol_20d ÷ shares_outstanding（%表示）
+  - 売買代金回転率 = avg_turnover_20d ÷ market_cap
+  - 流動性スコア = 0.4×(1/回転日数_norm) + 0.3×売買代金_rank + 0.3×ボラティリティ逆数_rank
+  - インパクトスコア = impact(1億円) ÷ σ_daily（標準化インパクト）
+- [ ] `backend/routers/stocks.py` に追加
+  - `GET /api/stocks/:code/custom-metrics` — カスタム指標計算結果
+- [ ] プリセット指標の結果をテーブル/カードで表示するコンポーネント
+
+**依存**: 1-5（指標計算エンジン）、3-1（インパクト分析）
+
+### 3-6. 比較タブ
 
 **目的**: spec.md §4.3.2 ⑤比較タブの実装
 
@@ -471,7 +502,18 @@ UX改善・エクスポート・テーマ対応などの仕上げフェーズ。
   - ネットワークエラー・タイムアウト時のリトライUI
   - ローディング状態の統一的な表示（Skeleton, Spin）
 
-### 4-7. ドキュメント整備
+### 4-7. 本番ビルド・デプロイ設定
+
+**目的**: フロントエンドビルド成果物をFastAPIで配信する本番構成の整備
+
+**タスク**:
+- [ ] `npm run build` でフロントエンドを `frontend/dist/` にビルド
+- [ ] FastAPIの `main.py` に `StaticFiles` マウント設定（`/` → `frontend/dist/`）
+- [ ] SPA用フォールバック設定（未知のパスは `index.html` を返却）
+- [ ] `uvicorn --host 127.0.0.1 --port 8000` での起動確認
+- [ ] （オプション）`docker-compose.yml` 作成
+
+### 4-8. ドキュメント整備
 
 **タスク**:
 - [ ] README.md 更新
