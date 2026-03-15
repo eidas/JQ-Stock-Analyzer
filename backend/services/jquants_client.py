@@ -20,7 +20,7 @@ class JQuantsClient:
         key = api_key or JQUANTS_API_KEY
         if not key:
             raise ValueError("J-Quants API key is not configured")
-        self._client = jquantsapi.Client(mail_address="", password="", refresh_token=key)
+        self._client = jquantsapi.ClientV2(api_key=key)
 
     def _retry(self, func, *args, max_retries: int = 3, **kwargs) -> Any:
         """Execute with exponential backoff retry."""
