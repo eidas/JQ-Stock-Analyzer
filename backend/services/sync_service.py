@@ -41,6 +41,15 @@ def _get_last_sync_date(db: Session, sync_type: str) -> date | None:
     return result
 
 
+def _col(row: pd.Series, *candidates: str, default=None):
+    """Get first available column value from candidates."""
+    for c in candidates:
+        val = row.get(c)
+        if val is not None and not (isinstance(val, float) and pd.isna(val)):
+            return val
+    return default
+
+
 def sync_listings(db: Session, client: JQuantsClient, sync_log_id: int | None = None) -> int:
     """Sync stock master data (銘柄マスタ)."""
     logger.info("Starting listings sync")
@@ -48,34 +57,41 @@ def sync_listings(db: Session, client: JQuantsClient, sync_log_id: int | None = 
     if df is None or df.empty:
         return 0
 
+    logger.info("Listings DataFrame columns: %s", list(df.columns))
+
+    # Deduplicate by 4-digit code (5-digit codes like 13010, 13015 both → 1301)
+    # Keep only the first occurrence per 4-digit code
+    seen: set[str] = set()
     count = 0
-    col_map = {
-        "Code": "code",
-        "CompanyName": "name",
-        "Sector17CodeName": "sector_17",
-        "Sector33CodeName": "sector_33",
-        "MarketCodeName": "market_segment",
-    }
 
     for _, row in df.iterrows():
         code = str(row.get("Code", ""))[:4]
-        if not code or len(code) < 4:
+        if not code or len(code) < 4 or not code.isalnum():
             continue
+        if code in seen:
+            continue
+        seen.add(code)
+
+        name = _col(row, "CompanyName", "CompanyNameEnglish", default="")
+        sector_17 = _col(row, "Sector17CodeName", "Sector17Code")
+        sector_33 = _col(row, "Sector33CodeName", "Sector33Code")
+        market = _col(row, "MarketCodeName", "MarketCode")
+
         existing = db.get(Stock, code)
         if existing:
-            existing.name = row.get("CompanyName", existing.name)
-            existing.sector_17 = row.get("Sector17CodeName", existing.sector_17)
-            existing.sector_33 = row.get("Sector33CodeName", existing.sector_33)
-            existing.market_segment = row.get("MarketCodeName", existing.market_segment)
+            existing.name = name or existing.name
+            existing.sector_17 = sector_17 or existing.sector_17
+            existing.sector_33 = sector_33 or existing.sector_33
+            existing.market_segment = market or existing.market_segment
             existing.is_active = True
             existing.updated_at = datetime.utcnow()
         else:
             db.add(Stock(
                 code=code,
-                name=row.get("CompanyName", ""),
-                sector_17=row.get("Sector17CodeName"),
-                sector_33=row.get("Sector33CodeName"),
-                market_segment=row.get("MarketCodeName"),
+                name=name or "",
+                sector_17=sector_17,
+                sector_33=sector_33,
+                market_segment=market,
                 is_active=True,
             ))
         count += 1
